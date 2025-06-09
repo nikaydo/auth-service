@@ -16,7 +16,7 @@ type UserDB struct {
 
 func DatabaseInit(Env config.Env) (UserDB, error) {
 	var err error
-	DB, err := sql.Open("pgx", Env.EnvMap["POSTGRESS_URL"])
+	DB, err := sql.Open("pgx", Env.EnvMap["DATABASE_URL"])
 	if err != nil {
 		return UserDB{}, err
 	}

@@ -20,7 +20,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file:", err)
 	}
-	log.Println("Database succesful read")
+	log.Println("Database auth succesful read")
 	db, err := database.DatabaseInit(env)
 	if err != nil {
 		log.Fatal("Error loading .env file:", err)
