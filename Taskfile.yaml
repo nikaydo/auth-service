@@ -1,0 +1,14 @@
+version: "3"  
+
+tasks:  
+  default:
+    cmds:  
+      - task: test  
+  generate:  
+    aliases:
+      - test  
+    desc: "Testing database with test database in docker"  
+    cmds:  
+      - docker compose up -d
+      - go test -v ./...
+      - docker compose down
