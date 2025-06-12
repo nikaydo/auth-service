@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"main/internal/config"
 	"main/internal/models"
 
@@ -18,15 +19,15 @@ func DatabaseInit(Env config.Env) (UserDB, error) {
 	var err error
 	DB, err := sql.Open("pgx", Env.EnvMap["DATABASE_URL"])
 	if err != nil {
-		return UserDB{}, err
+		return UserDB{}, fmt.Errorf("error open database: %w", err)
 	}
 	if err = DB.Ping(); err != nil {
-		return UserDB{}, err
+		return UserDB{}, fmt.Errorf("error connectiond to database: %w", err)
 	}
 	u := UserDB{UserBD: DB, ENV: Env}
 	err = u.Tables()
 	if err != nil {
-		return u, err
+		return u, fmt.Errorf("error create tables: %w", err)
 	}
 	return u, nil
 }
@@ -75,8 +76,4 @@ func (u *UserDB) UpdateUser(login string, t string) error {
 		return err
 	}
 	return nil
-}
-
-func (u *UserDB) DeleteUser() {
-
 }

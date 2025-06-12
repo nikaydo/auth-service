@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"main/internal/database"
 
 	myjwt "main/internal/jwt"
@@ -17,7 +18,7 @@ type AuthService struct {
 func (as *AuthService) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.SignUpResponse, error) {
 	n, err := as.User.CreateUser(req.Login, req.Password)
 	if err != nil {
-		return &auth.SignUpResponse{}, err
+		return &auth.SignUpResponse{}, fmt.Errorf("error create user: %w", err)
 	}
 	return &auth.SignUpResponse{UserId: int32(n)}, nil
 }
@@ -25,15 +26,15 @@ func (as *AuthService) SignUp(ctx context.Context, req *auth.SignUpRequest) (*au
 func (as *AuthService) SignIn(ctx context.Context, req *auth.SignInRequest) (*auth.SignInResponse, error) {
 	user, err := as.User.CheckUser(req.Login, req.Password, true)
 	if err != nil {
-		return &auth.SignInResponse{}, err
+		return &auth.SignInResponse{}, fmt.Errorf("error check user: %w", err)
 	}
 	var j myjwt.JwtTokens
 	j.Env = as.User.ENV
 	if err = j.CreateTokens(user.Id, user.Login, ""); err != nil {
-		return &auth.SignInResponse{}, err
+		return &auth.SignInResponse{}, fmt.Errorf("error create tokens: %w", err)
 	}
 	if err = as.User.UpdateUser(user.Login, j.RefreshToken); err != nil {
-		return &auth.SignInResponse{}, err
+		return &auth.SignInResponse{}, fmt.Errorf("error update user: %w", err)
 	}
 	return &auth.SignInResponse{Token: j.AccessToken}, nil
 }
@@ -41,7 +42,7 @@ func (as *AuthService) SignIn(ctx context.Context, req *auth.SignInRequest) (*au
 func (as *AuthService) CheckUser(ctx context.Context, req *auth.CheckUserRequest) (*auth.CheckUserResponse, error) {
 	u, err := as.User.CheckUser(req.Login, req.Password, req.WithPass)
 	if err != nil {
-		return &auth.CheckUserResponse{}, err
+		return &auth.CheckUserResponse{}, fmt.Errorf("error check user: %w", err)
 	}
 	return &auth.CheckUserResponse{User: &auth.User{Id: int32(u.Id), Login: u.Login, Refresh: u.RefreshToken}}, nil
 }
@@ -50,10 +51,10 @@ func (as *AuthService) CreateTokens(ctx context.Context, req *auth.CreateTokensR
 	var j myjwt.JwtTokens
 	j.Env = as.User.ENV
 	if err := j.CreateTokens(int(req.Id), req.Login, req.Role); err != nil {
-		return &auth.CreateTokensResponse{}, err
+		return &auth.CreateTokensResponse{}, fmt.Errorf("error create tokens: %w", err)
 	}
 	if err := as.User.UpdateUser(req.Login, j.RefreshToken); err != nil {
-		return &auth.CreateTokensResponse{}, err
+		return &auth.CreateTokensResponse{}, fmt.Errorf("error update user: %w", err)
 	}
 	return &auth.CreateTokensResponse{JwtToken: j.AccessToken}, nil
 }
@@ -70,7 +71,7 @@ func (as *AuthService) ValidateJWT(ctx context.Context, req *auth.ValidateJWTReq
 		if err == myjwt.ErrTokenExpired {
 			return &auth.ValidateJWTResponse{Id: int32(id), Login: login, Expired: true}, nil
 		}
-		return &auth.ValidateJWTResponse{Id: int32(id), Login: login, Expired: false}, err
+		return &auth.ValidateJWTResponse{}, fmt.Errorf("error validate token: %w", err)
 	}
-	return &auth.ValidateJWTResponse{Id: int32(id), Login: login, Expired: false}, err
+	return &auth.ValidateJWTResponse{Id: int32(id), Login: login, Expired: false}, nil
 }
