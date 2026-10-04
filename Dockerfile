@@ -1,27 +1,16 @@
-# Dockerfile собирает сервис из локальной копии контракта.
-#
-# По умолчанию подтягивается опубликованная версия. Для локальной сборки
-# положите контракт рядом и передайте флаг:
-#
-#   docker build --build-arg CONTRACT_PATH=../grpc-contract .
+# Секреты в образ не попадают: копируется только код, а конфигурация приходит
+# извне через переменные окружения.
 
-FROM golang:1.24-alpine AS builder
-
-ARG CONTRACT_PATH=""
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
 # Сначала манифесты: слой с зависимостями переиспользуется, пока не меняются
-# версии.
+# версии. Контракт приходит из прокси модулей по версии из go.mod, поэтому
+# копировать его вручную не нужно.
 COPY go.mod go.sum ./
 
-# Контракт нужен до go mod download, потому что он объявлен в require.
-COPY ${CONTRACT_PATH} /src/grpc-contract
-
-RUN if [ -d /src/grpc-contract/proto ]; then \
-      go mod edit -replace github.com/nikaydo/grpc-contract=/src/grpc-contract; \
-    fi \
- && go mod download
+RUN go mod download
 
 COPY . .
 
@@ -39,10 +28,12 @@ RUN apk add --no-cache ca-certificates tzdata \
 WORKDIR /app
 
 COPY --from=builder /out/auth-service /app/auth-service
+
+# Миграции копируются в образ: без них сервис не поднимется, потому что схема
+# управляется миграциями, а не вызовами CREATE TABLE в коде.
 COPY --from=builder /src/db /app/db
 
-# Конфигурация приходит извне: файл .env в образ не копируется намеренно,
-# иначе секреты попали бы в слои.
+# Файл .env намеренно не копируется: секреты остались бы в слоях образа.
 USER app
 
 EXPOSE 50051

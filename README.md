@@ -27,15 +27,11 @@ Go 1.24 · gRPC · PostgreSQL 17 (`pgx/v5`) · `golang-jwt` v5 · bcrypt ·
 git clone https://github.com/nikaydo/auth-service.git
 cd auth-service
 
-# 1. Контракт нужен как локальный модуль
-git clone --depth 1 https://github.com/nikaydo/grpc-contract.git ../grpc-contract
-go mod edit -replace github.com/nikaydo/grpc-contract=../grpc-contract
-
-# 2. Конфигурация
+# 1. Конфигурация
 cp .env.example .env
 openssl rand -base64 48   # → JWT_SECRET
 
-# 3. Запуск
+# 2. Запуск
 docker compose up --build
 ```
 

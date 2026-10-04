@@ -64,8 +64,27 @@ func (s *AuthService) SignUp(ctx context.Context, req *authpb.SignUpRequest) (*a
 		return nil, internalError(ctx, s.log, "не удалось создать пользователя", err)
 	}
 
+	// Сессия выдаётся сразу: после регистрации клиенту не нужно отправлять
+	// пароль ещё раз, чтобы войти.
+	pair, err := s.issueSession(ctx, database.User{
+		ID:           id,
+		Login:        database.NormalizeLogin(req.GetLogin()),
+		PasswordHash: hash,
+		Role:         "user",
+	}, "", "")
+	if err != nil {
+		// Пользователь создан, но сессия не выдана. Ошибку возвращаем:
+		// клиент сможет войти отдельно, а регистрация не будет потеряна.
+		s.log.Error("пользователь создан, но сессия не выдана", "user_id", id, "err", err)
+		return nil, internalError(ctx, s.log, "не удалось создать сессию", err)
+	}
+
 	s.log.Info("пользователь зарегистрирован", "user_id", id, "login", req.GetLogin())
-	return &authpb.SignUpResponse{UserId: int32(id)}, nil
+	return &authpb.SignUpResponse{
+		UserId:       int32(id),
+		Token:        pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+	}, nil
 }
 
 // SignIn проверяет пароль и выдаёт пару токенов.
