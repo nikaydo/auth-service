@@ -1,11 +1,51 @@
-version: '3.1'
+# Локальный запуск сервиса и базы.
+#
+#   docker compose up --build
+#
+# Значения по умолчанию предназначены только для разработки.
 
 services:
-  postgres:
-    image: postgres:15
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: testdb
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth
+      POSTGRES_DB: auth
     ports:
-      - "15432:5432"
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth -d auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  auth-service:
+    build:
+      context: .
+      # Контракт кладётся рядом с репозиторием; при сборке без него
+      # подтягивается опубликованная версия.
+      args:
+        CONTRACT_PATH: ""
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "50051:50051"
+    environment:
+      DATABASE_URL: postgres://auth:auth@db:5432/auth?sslmode=disable
+      # Подстав��те настоящие значения: openssl rand -base64 48
+      JWT_SECRET: "${JWT_SECRET:-local-development-secret-not-for-production-use}"
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL: 720h
+      JWT_ISSUER: video-platform
+      HOST: 0.0.0.0
+      PORT: 50051
+    env_file:
+      - path: .env
+        required: false
+
+volumes:
+  pgdata:

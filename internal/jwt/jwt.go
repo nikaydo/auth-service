@@ -1,92 +1,199 @@
+// Package jwt выпускает и проверяет токены доступа.
+//
+// Используется golang-jwt v5: в отличие от v3 библиотека сама проверяет
+// срок действия и алгоритм подписи, а типы ошибок позволяют отличать
+// истёкший токен от недействительного без сравнения текстов.
 package jwt
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"main/internal/config"
 	"strconv"
 	"time"
 
-	"github.com/golang-jwt/jwt"
+	jwtlib "github.com/golang-jwt/jwt/v5"
+
+	"github.com/nikaydo/auth-service/internal/auth"
 )
 
+// Ошибки проверки токена.
 var (
-	ErrTokenExpired = errors.New("token is expired")
+	ErrTokenExpired   = errors.New("срок действия токена истёк")
+	ErrTokenInvalid   = errors.New("токен недействителен")
+	ErrTokenMalformed = errors.New("токен повреждён")
+	ErrUnexpectedAlg  = errors.New("неожиданный алгоритм подписи")
 )
 
-type JwtTokens struct {
+// Claims — содержимое токена.
+type Claims struct {
+	jwtlib.RegisteredClaims
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+// Manager выпускает и проверяет токены.
+type Manager struct {
+	secret     []byte
+	issuer     string
+	accessTTL  time.Duration
+	refreshTTL time.Duration
+	now        func() time.Time
+}
+
+// NewManager создаёт менеджер токенов.
+func NewManager(secret, issuer string, accessTTL, refreshTTL time.Duration) *Manager {
+	return &Manager{
+		secret:     []byte(secret),
+		issuer:     issuer,
+		accessTTL:  accessTTL,
+		refreshTTL: refreshTTL,
+		now:        time.Now,
+	}
+}
+
+// Pair — выданная пара токенов.
+type Pair struct {
 	AccessToken  string
 	RefreshToken string
-	Env          config.Env
+	// RefreshHash — хеш, который нужно сохранить вместо самого токена.
+	RefreshHash string
+	// FamilyID — семейство сессии, к которому относится токен.
+	FamilyID string
+	// AccessExpiresAt и RefreshExpiresAt нужны клиенту для установки cookie.
+	AccessExpiresAt  time.Time
+	RefreshExpiresAt time.Time
 }
 
-func (j *JwtTokens) CreateTokens(id int, username, role string) error {
-	var err error
-	j.AccessToken, err = j.CreateToken(id, username, role, j.Env.EnvMap["SECRET_TTL"], j.Env.EnvMap["SECRET"])
+// NewPair выпускает access-токен и описывает параметры refresh-токена.
+//
+// Refresh-токен непрозрачный: это случайная строка, а не JWT. Она не несёт
+// утверждений, поэтому и не подписывается — единственный способ её принять
+// это найти запись по хешу в таблице refresh_tokens. Случайность обеспечивает
+// 256 бит энтропии, поэтому подбирать перебором токен нельзя и медленный KDF
+// не нужен.
+func (m *Manager) NewPair(userID int64, username, role, refreshToken, familyID string) (Pair, error) {
+	now := m.now()
+
+	accessToken, accessExp, err := m.sign(userID, username, role, m.secret, now.Add(m.accessTTL), now)
 	if err != nil {
-		return fmt.Errorf("error creating JWT token: %w", err)
+		return Pair{}, err
 	}
-	j.RefreshToken, err = j.CreateToken(id, username, role, j.Env.EnvMap["REFRESH_TTL"], j.Env.EnvMap["SECRET_REFRESH"])
-	if err != nil {
-		return fmt.Errorf("error creating refresh token: %w", err)
-	}
-	return nil
+
+	return Pair{
+		AccessToken:      accessToken,
+		RefreshToken:     refreshToken,
+		RefreshHash:      auth.HashRefreshToken(refreshToken),
+		FamilyID:         familyID,
+		AccessExpiresAt:  accessExp,
+		RefreshExpiresAt: now.Add(m.refreshTTL),
+	}, nil
 }
 
-func (j *JwtTokens) CreateToken(id int, username, role, tokenTTL, secret string) (string, error) {
-	exTime, err := strconv.Atoi(tokenTTL)
+// sign выпускает токен доступа.
+//
+// В claims обязательно входит jti: без него два токена, выпущенные в одну
+// секунду для одного пользователя, получаются байт-в-байт одинаковыми,
+// потому что подпись HMAC детерминирована. Из-за этого отозванный токен и
+// выданный следом «новый» совпали бы, а в логах невозможно было бы связать
+// запрос с выдачей.
+func (m *Manager) sign(userID int64, username, role string, secret []byte, expiresAt, now time.Time) (string, time.Time, error) {
+	tokenID, err := newTokenID()
 	if err != nil {
-		return "", fmt.Errorf("failed to parse TTL from environment: %w", err)
+		return "", time.Time{}, err
 	}
-	tokenString, err := jwt.NewWithClaims(jwt.SigningMethodHS256,
-		jwt.MapClaims{
-			"sub":      id,
-			"username": username,
-			"iss":      "server",
-			"role":     role,
-			"aud":      "video",
-			"exp":      time.Now().Add(time.Duration(exTime * int(time.Minute))).Unix(),
-			"iat":      time.Now().Unix(),
-		}).SignedString([]byte(secret))
+
+	claims := Claims{
+		RegisteredClaims: jwtlib.RegisteredClaims{
+			ID:        tokenID,
+			Subject:   fmt.Sprintf("%d", userID),
+			Issuer:    m.issuer,
+			Audience:  jwtlib.ClaimStrings{m.issuer},
+			IssuedAt:  jwtlib.NewNumericDate(now),
+			NotBefore: jwtlib.NewNumericDate(now),
+			ExpiresAt: jwtlib.NewNumericDate(expiresAt),
+		},
+		Username: username,
+		Role:     role,
+	}
+
+	signed, err := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, claims).SignedString(secret)
 	if err != nil {
-		return "", fmt.Errorf("error signing token: %w", err)
+		return "", time.Time{}, fmt.Errorf("не удалось подписать токен: %w", err)
 	}
-	return tokenString, nil
+	return signed, expiresAt, nil
 }
 
-func ValidateToken(t, secret string) (int, string, error) {
-	token, err := jwt.Parse(t, func(token *jwt.Token) (any, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("no valid signing method")
-		}
-		return []byte(secret), nil
-	})
+// ParseAccess проверяет access-токен.
+func (m *Manager) ParseAccess(tokenString string) (userID int64, username, role string, err error) {
+	claims, err := m.parse(tokenString, m.secret)
 	if err != nil {
-		if err.Error() == "Token is expired" {
-			id, username, err := setClaims(token)
-			if err != nil {
-				return 0, "", fmt.Errorf("failed to extract claims from expired token: %w", err)
+		return 0, "", "", err
+	}
+	id, err := parseUserID(claims.Subject)
+	if err != nil {
+		return 0, "", "", err
+	}
+	return id, claims.Username, claims.Role, nil
+}
+
+// parse проверяет токен общим кодом.
+func (m *Manager) parse(tokenString string, secret []byte) (*Claims, error) {
+	claims := &Claims{}
+
+	parsed, err := jwtlib.ParseWithClaims(
+		tokenString,
+		claims,
+		func(t *jwtlib.Token) (any, error) {
+			// Алгоритм проверяется явно: без этой проверки библиотека
+			// приняла бы токен с alg=none или с другим ключом.
+			if _, ok := t.Method.(*jwtlib.SigningMethodHMAC); !ok {
+				return nil, ErrUnexpectedAlg
 			}
-			return id, username, ErrTokenExpired
+			return secret, nil
+		},
+		jwtlib.WithValidMethods([]string{jwtlib.SigningMethodHS256.Alg()}),
+		jwtlib.WithIssuer(m.issuer),
+		jwtlib.WithAudience(m.issuer),
+		jwtlib.WithExpirationRequired(),
+		jwtlib.WithIssuedAt(),
+		// Проверка срока идёт по времени Manager, а не по системным часам
+		// библиотеки: так время контролируется в тестах и в коде.
+		jwtlib.WithTimeFunc(m.now),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, jwtlib.ErrTokenExpired), errors.Is(err, jwtlib.ErrTokenNotValidYet):
+			return nil, ErrTokenExpired
+		case errors.Is(err, ErrUnexpectedAlg):
+			return nil, ErrUnexpectedAlg
+		case errors.Is(err, jwtlib.ErrTokenMalformed), errors.Is(err, jwtlib.ErrSignatureInvalid):
+			return nil, ErrTokenInvalid
+		default:
+			return nil, fmt.Errorf("%w: %v", ErrTokenInvalid, err)
 		}
-		return 0, "", fmt.Errorf("failed to parse token: %w", err)
 	}
-	return setClaims(token)
+	if !parsed.Valid || claims.Subject == "" {
+		return nil, ErrTokenInvalid
+	}
+	return claims, nil
 }
 
-func setClaims(token *jwt.Token) (int, string, error) {
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return 0, "", fmt.Errorf("invalid token")
+// newTokenID возвращает случайный идентификатор токена.
+func newTokenID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("не удалось сгенерировать идентификатор токена: %w", err)
 	}
-	username, ok := claims["username"].(string)
-	if !ok {
-		return 0, "", fmt.Errorf("cant parse username from jwt token")
-	}
-	id, ok := claims["sub"].(float64)
-	if !ok {
-		return 0, "", fmt.Errorf("cant parse id from jwt token")
-	}
-	return int(id), username, nil
+	return hex.EncodeToString(buf), nil
 }
-	
+
+// parseUserID разбирает идентификатор пользователя из claim.
+func parseUserID(subject string) (int64, error) {
+	id, err := strconv.ParseInt(subject, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: некорректный идентификатор пользователя", ErrTokenInvalid)
+	}
+	return id, nil
+}
